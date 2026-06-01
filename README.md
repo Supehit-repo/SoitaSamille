@@ -8,6 +8,50 @@ Demo käyttää puheen muodostukseen HH-TTSserviceä eikä selaimen
 
 ## Käynnistys paikallisesti
 
+### Docker-konttina
+
+Suositeltu paikallinen ajo:
+
+```powershell
+cd "E:\SoitaSamille"
+.\start-container.ps1
+```
+
+Tämä rakentaa ja käynnistää `soita-samille`-kontin. Kontti palvelee HTML:n ja
+API:n osoitteessa:
+
+```text
+http://localhost:5177/
+```
+
+Pysäytys:
+
+```powershell
+.\stop-container.ps1
+```
+
+Tila:
+
+```powershell
+.\status-container.ps1
+```
+
+Kontti tarvitsee HH-TTSservicen käyntiin hostilla portissa `5620`. Kontin
+oletus-TTS-osoite on:
+
+```text
+http://host.docker.internal:5620/speak
+```
+
+Jos ajat TTS:n muualla:
+
+```powershell
+$env:HH_TTS_URL = "http://host.docker.internal:5620/speak"
+.\start-container.ps1
+```
+
+### Suoraan Pythonilla
+
 ```powershell
 cd "E:\SoitaSamille"
 .\start-soita-samille.ps1

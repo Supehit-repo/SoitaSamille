@@ -1,0 +1,18 @@
+services:
+  soita-samille:
+    build:
+      context: .
+    image: soita-samille:local
+    container_name: soita-samille
+    ports:
+      - "${SOITA_SAMILLE_PORT:-5177}:5177"
+    environment:
+      PORT: "5177"
+      HOST: "0.0.0.0"
+      HH_TTS_URL: "${HH_TTS_URL:-http://host.docker.internal:5620/speak}"
+      HH_TTS_VOICE: "${HH_TTS_VOICE:-fi_FI-harri-medium}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

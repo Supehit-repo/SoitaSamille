@@ -307,6 +307,15 @@
     let currentAudioResolve = null;
     let recentReplies = [];
     let audioUnlocked = false;
+    let recentErrorReplies = [];
+
+    function pickClientLine(candidates) {
+      const fresh = candidates.filter((candidate) => !recentErrorReplies.includes(candidate));
+      const line = fresh.length ? fresh[Math.floor(Math.random() * fresh.length)] : candidates[Math.floor(Math.random() * candidates.length)];
+      recentErrorReplies.push(line);
+      recentErrorReplies = recentErrorReplies.slice(-20);
+      return line;
+    }
 
     function isLocalAccess() {
       return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
@@ -518,7 +527,12 @@
     function spokenError(error) {
       switch (error.message) {
         case "empty_transcript":
-          return "Et sanonut mitään. Vihdoinkin harkintaa.";
+          return pickClientLine([
+            "Et sanonut mitään. Vihdoinkin harkintaa.",
+            "Hiljaisuus oli tähän asti paras osuutesi.",
+            "Jos mietit, jatka samaa harvinaisuutta.",
+            "Sano jotain, jos ajatus löytyy.",
+          ]);
         case "insecure_context":
           return "Avaa HTTPS-linkki. HTTP ei saa mikkiä.";
         case "media_api_missing":
@@ -532,8 +546,21 @@
         case "tts_failed":
         case "audio_playback_failed":
           return "";
+        case "roast_failed":
+          return pickClientLine([
+            "Vastaus hajosi. Sopii keskustelun tasoon.",
+            "Palvelin nikotteli, eli samaa sarjaa.",
+            "Hetki meni hukkaan. Sinulta tuttua.",
+            "Tuo rikkoi jopa vastauspuolen.",
+          ]);
         default:
-          return "Linja meni poikki. Jopa puhelin halusi tästä keskustelusta pois.";
+          return pickClientLine([
+            "Linja yskii. Yritä nyt edes selvästi.",
+            "Puhelu kompastui. Ei ihme tällä sisällöllä.",
+            "Tekniikka häiriintyi kysymyksestäsi.",
+            "Jokin meni poikki. Aloita ajattelusta.",
+            "Häiriö linjalla, tai sitten sinussa.",
+          ]);
       }
     }
 
@@ -561,6 +588,7 @@
             }
             const line = spokenError(error);
             if (line) await safeSpeak(line);
+            await new Promise((resolve) => setTimeout(resolve, 300));
           }
         }
       } catch (error) {
