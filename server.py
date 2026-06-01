@@ -4,6 +4,7 @@
 import json
 import os
 import random
+import re
 import socket
 import sys
 import urllib.error
@@ -26,6 +27,8 @@ Vastaa yhdellä lyhyellä puhekielisellä lauseella, 3-9 sanaa.
 Tyyli: todella tyly, kuiva, eleetön, nopea, arkinen ja suoraan naamaan.
 Perusviesti: käyttäjän pitäisi itse vähän miettiä ennen kuin soittelee.
 Reagoi käyttäjän sanoihin, älä heitä irrallista fraasia.
+Poimi käyttäjän lauseesta konkreettinen sana, verbi tai aihe ja vittuile juuri siitä.
+Jos vastaus toimisi mihin tahansa kysymykseen, se on huono vastaus.
 Käytä välillä sanaleikkiä, vähättelyä, väärinymmärrystä tai tylyä arkivertausta.
 Älä ole akateeminen. Älä selitä. Älä pehmennä. Älä toista aiempia vastauksia.
 Älä hauku suojattuja ominaisuuksia, uhkaile, toivo vahinkoa tai mene seksuaaliseksi.
@@ -203,8 +206,183 @@ TRADITIONAL_FRAMES = [
 ]
 
 
+STOPWORDS = {
+    "aika",
+    "aina",
+    "asia",
+    "että",
+    "hei",
+    "ihan",
+    "joku",
+    "jokin",
+    "joo",
+    "jos",
+    "kanssa",
+    "kai",
+    "kaikki",
+    "koko",
+    "kun",
+    "kyllä",
+    "mä",
+    "mää",
+    "me",
+    "minä",
+    "mitä",
+    "mikä",
+    "miksi",
+    "mihin",
+    "mistä",
+    "miten",
+    "minkä",
+    "minkä takia",
+    "missä",
+    "moi",
+    "mut",
+    "mutta",
+    "ne",
+    "niin",
+    "no",
+    "nyt",
+    "on",
+    "oot",
+    "olen",
+    "oli",
+    "olla",
+    "olisi",
+    "pitää",
+    "pitäisi",
+    "saada",
+    "saanko",
+    "saan",
+    "saa",
+    "sais",
+    "sä",
+    "sää",
+    "se",
+    "sen",
+    "siis",
+    "sitä",
+    "sitten",
+    "sulla",
+    "sun",
+    "tää",
+    "tämä",
+    "tässä",
+    "tuo",
+    "vaan",
+    "vai",
+    "vähän",
+    "voiko",
+    "voin",
+    "voinko",
+    "kuuluuko",
+    "näkyykö",
+    "toimiiko",
+    "onnistuuko",
+}
+
+NEGATIONS = {"ei", "eikö", "en", "et", "älä", "älkää"}
+
+
 def normalize_reply(text):
     return "".join(ch.lower() for ch in text if ch.isalnum() or ch.isspace()).strip()
+
+
+def transcript_words(text):
+    return re.findall(r"[0-9A-Za-zÅÄÖåäö]+", (text or "").lower())
+
+
+def is_focus_word(word):
+    return len(word) > 1 and word not in STOPWORDS
+
+
+def extract_focus_terms(transcript):
+    words = transcript_words(transcript)
+    return [word for word in words if is_focus_word(word)]
+
+
+def extract_focus_phrase(transcript):
+    words = transcript_words(transcript)
+    if not words:
+        return ""
+
+    for index, word in enumerate(words[:-1]):
+        if word in NEGATIONS and is_focus_word(words[index + 1]):
+            start = index - 1 if index > 0 and is_focus_word(words[index - 1]) else index
+            return " ".join(words[start : index + 2])
+
+    for size in (3, 2):
+        for index in range(0, len(words) - size + 1):
+            chunk = words[index : index + size]
+            focus_count = sum(1 for word in chunk if is_focus_word(word))
+            if focus_count >= size:
+                return " ".join(chunk)
+
+    terms = extract_focus_terms(transcript)
+    return terms[0] if terms else ""
+
+
+def contextual_roasts(transcript):
+    focus = extract_focus_phrase(transcript)
+    if not focus:
+        return []
+
+    cap_focus = focus[:1].upper() + focus[1:]
+    roasts = [
+        f"Tuo {focus} kuulostaa käyttäjävirheeltä.",
+        f"Kuulin {focus}. Ongelma jäi silti sinne.",
+        f"{cap_focus}? Aloita omasta päästä.",
+        f"Jos kyse on {focus}, mietit myöhässä.",
+        f"Tuo {focus} ei parane soittamalla.",
+        f"Tuo {focus} kaatui jo puheessa.",
+        f"Selvä, {focus}. Ajattelu puuttui taas.",
+        f"Tuo {focus} on käsissäsi ongelma.",
+        f"Jopa aihe {focus} kärsii käsittelystäsi.",
+        f"Kuuntelin kohdan {focus}. Valitettavasti ymmärsin.",
+        f"Aihe {focus} vaati sinulta liikaa.",
+        f"Tuo {focus} paljasti ongelman nopeasti.",
+        f"Aihe {focus} ja sinä, huono yhdistelmä.",
+        f"Jos {focus} tökkii, arvaa tekijä.",
+        f"Tuo {focus} ei ollut vaikea kohta.",
+        f"Kysymys oli {focus}; vastaus on mieti.",
+    ]
+
+    lower = transcript.lower()
+    if any(word in lower for word in ["miksi", "minkä takia", "mistä johtuu"]):
+        roasts.extend(
+            [
+                f"Koska aihe {focus} osui ajatteluusi.",
+                f"Siksi, että aihe {focus} ei kestä sinua.",
+                f"Koska teit aiheesta {focus} esityksen.",
+            ]
+        )
+    if any(word in lower for word in ["miten", "kuinka"]):
+        roasts.extend(
+            [
+                f"Aloita asiassa {focus} olemalla säätämättä.",
+                f"Tuo {focus} hoituu, kun et koske.",
+                f"Tee {focus} vasta ajattelun jälkeen.",
+            ]
+        )
+    if any(word in lower for word in ["voinko", "pitäisikö", "kannattaako"]):
+        roasts.extend(
+            [
+                f"Voit, mutta aihe {focus} kärsii.",
+                f"Älä kokeile {focus} ilman valvojaa.",
+                f"Kannattaa ensin ymmärtää {focus}.",
+            ]
+        )
+
+    return roasts
+
+
+def reply_mentions_transcript(reply, transcript):
+    terms = extract_focus_terms(transcript)
+    if not terms:
+        return True
+
+    normalized_reply = normalize_reply(reply)
+    return any(term in normalized_reply for term in terms[:5])
 
 
 def pick_unique(candidates, recent_replies=None):
@@ -230,7 +408,8 @@ def pick_unique(candidates, recent_replies=None):
 def local_roast(transcript, recent_replies=None):
     clean = " ".join((transcript or "").split())
     lower = clean.lower()
-    candidates = []
+    contextual_candidates = contextual_roasts(clean)
+    candidates = list(contextual_candidates)
 
     if not clean:
         return pick_unique(
@@ -259,6 +438,8 @@ def local_roast(transcript, recent_replies=None):
 
     specific_candidates = list(candidates)
     candidates.extend(TRADITIONAL_FRAMES if random.random() < 0.55 else FALLBACKS)
+    if contextual_candidates:
+        return pick_unique(contextual_candidates, recent_replies)
     if specific_candidates and random.random() < 0.82:
         return pick_unique(specific_candidates, recent_replies)
     return pick_unique(candidates, recent_replies)
@@ -418,6 +599,8 @@ class Handler(SimpleHTTPRequestHandler):
             recent_replies = []
         recent_replies = [str(reply)[:200] for reply in recent_replies[-80:]]
         reply = openai_roast(transcript, recent_replies)
+        if reply and not reply_mentions_transcript(reply, transcript):
+            reply = None
         source = "openai" if reply else "local"
         reply = reply or local_roast(transcript, recent_replies)
         if normalize_reply(reply) in {normalize_reply(item) for item in recent_replies}:
