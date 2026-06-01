@@ -433,12 +433,33 @@
       }
     }
 
-    async function requestMicPermission() {
+    async function startMicMonitor() {
+      if (micStream) return { ok: true };
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach((track) => track.stop());
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+          micAudioContext = new AudioContextClass();
+          if (micAudioContext.state === "suspended") await micAudioContext.resume();
+          micAnalyser = micAudioContext.createAnalyser();
+          micAnalyser.fftSize = 1024;
+          micAnalyser.smoothingTimeConstant = 0.2;
+          micSamples = new Uint8Array(micAnalyser.fftSize);
+          micSource = micAudioContext.createMediaStreamSource(micStream);
+          micSource.connect(micAnalyser);
+        }
+
         return { ok: true };
       } catch (error) {
+        stopMicMonitor();
         if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError" || error.name === "SecurityError") {
           throw new Error("mic_not_allowed");
         }
@@ -446,11 +467,71 @@
       }
     }
 
-    const SENTENCE_MIN_LISTEN_MS = 5200;
-    const SENTENCE_MAX_LISTEN_MS = 20000;
-    const SENTENCE_SILENCE_MS = 2300;
-    const SENTENCE_CONFIRM_MS = 1800;
-    const SENTENCE_CONFIRM_SILENCE_MS = 900;
+    async function requestMicPermission() {
+      return startMicMonitor();
+    }
+
+    function stopMicMonitor() {
+      if (micStream) {
+        micStream.getTracks().forEach((track) => track.stop());
+      }
+      micStream = null;
+      micSource = null;
+      micAnalyser = null;
+      micSamples = null;
+      if (micAudioContext) {
+        micAudioContext.close().catch(() => {});
+      }
+      micAudioContext = null;
+    }
+
+    function currentMicLevel() {
+      if (!micAnalyser || !micSamples) return 0;
+      micAnalyser.getByteTimeDomainData(micSamples);
+      let sum = 0;
+      for (const sample of micSamples) {
+        const centered = (sample - 128) / 128;
+        sum += centered * centered;
+      }
+      return Math.sqrt(sum / micSamples.length);
+    }
+
+    async function waitForMicSilence(minSilentMs = MIC_SILENCE_CONFIRM_MS) {
+      if (!micAnalyser) return;
+
+      const deadline = Date.now() + MIC_SILENCE_MAX_WAIT_MS;
+      let silentSince = 0;
+      while (callActive && Date.now() < deadline) {
+        if (currentMicLevel() > MIC_ACTIVE_THRESHOLD) {
+          silentSince = 0;
+        } else {
+          if (!silentSince) silentSince = Date.now();
+          if (Date.now() - silentSince >= minSilentMs) return;
+        }
+        await sleep(80);
+      }
+    }
+
+    async function finishUserTranscript(transcript) {
+      await waitForMicSilence();
+      return cleanTranscript(transcript);
+    }
+
+    const SENTENCE_MAX_LISTEN_MS = 25000;
+    const SENTENCE_SILENCE_MS = 1300;
+    const FIRST_LISTEN_MAX_MS = 12000;
+    const CONTINUATION_LISTEN_MS = 2400;
+    const TURN_MIN_WORDS = 2;
+    const DUPLICATE_TRANSCRIPT_GUARD_MS = 2500;
+    const MIC_ACTIVE_THRESHOLD = 0.018;
+    const MIC_SILENCE_CONFIRM_MS = 1000;
+    const MIC_SILENCE_MAX_WAIT_MS = 4500;
+
+    let micStream = null;
+    let micAudioContext = null;
+    let micAnalyser = null;
+    let micSamples = null;
+    let micSource = null;
 
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
@@ -499,7 +580,7 @@
       const now = Date.now();
       if (!normalized || tokens.length < 2) return true;
       if (lastSpokenBySami && now - lastSpokenAt < ECHO_GUARD_MS && isSimilarSpeech(transcript, lastSpokenBySami)) return true;
-      if (lastAcceptedTranscript && now - lastAcceptedAt < ECHO_GUARD_MS && normalizeSpeech(lastAcceptedTranscript) === normalized) return true;
+      if (lastAcceptedTranscript && now - lastAcceptedAt < DUPLICATE_TRANSCRIPT_GUARD_MS && normalizeSpeech(lastAcceptedTranscript) === normalized) return true;
       return false;
     }
 
@@ -507,19 +588,9 @@
       return cleanTranscript(text).split(/\s+/).filter(Boolean).length;
     }
 
-    function hasSentencePunctuation(text) {
-      return /(?:[.!?]|\.\.\.)\s*$/.test(cleanTranscript(text));
-    }
-
-    function looksLikeFullSentence(text, startedAt) {
+    function isUsableTurn(text) {
       const wordCount = transcriptWordCount(text);
-      const elapsed = Date.now() - startedAt;
-      if (!wordCount) return false;
-      if (hasSentencePunctuation(text) && (wordCount >= 2 || elapsed >= 1600)) return true;
-      if (wordCount >= 14) return true;
-      if (wordCount >= 7 && elapsed >= SENTENCE_MIN_LISTEN_MS) return true;
-      if (wordCount >= 4 && elapsed >= 7200) return true;
-      return false;
+      return wordCount >= TURN_MIN_WORDS;
     }
 
     function addTranscriptPiece(pieces, piece) {
@@ -551,7 +622,6 @@
         let finalText = "";
         let interimText = "";
         let settled = false;
-        let heardSpeech = false;
         let idleTimer = null;
         let hardTimer = null;
 
@@ -606,14 +676,12 @@
 
         currentRecognition.onresult = (event) => {
           interimText = "";
-          heardSpeech = true;
           for (let i = event.resultIndex; i < event.results.length; i += 1) {
             const part = event.results[i][0].transcript.trim();
             if (event.results[i].isFinal) finalText += `${part} `;
             else interimText += `${part} `;
           }
           scheduleIdleCheck();
-          if (hasSentencePunctuation(fullText())) finishCurrentText();
         };
 
         currentRecognition.onerror = (event) => {
@@ -638,15 +706,8 @@
         currentRecognition.onend = () => {
           if (settled) return;
           const transcript = fullText();
-          if (transcript) {
-            if (heardSpeech) {
-              idleTimer = setTimeout(finishCurrentText, Math.min(900, silenceMillis));
-            } else {
-              finish(transcript);
-            }
-          } else {
-            fail("empty_transcript");
-          }
+          if (transcript) finish(transcript);
+          else fail("empty_transcript");
         };
 
         try {
@@ -669,49 +730,45 @@
     async function listenForSentence() {
       const startedAt = Date.now();
       const pieces = [];
+      let lastHeardAt = 0;
 
       while (callActive && Date.now() - startedAt < SENTENCE_MAX_LISTEN_MS) {
         const combined = cleanTranscript(pieces.join(" "));
-        if (combined && looksLikeFullSentence(combined, startedAt)) {
-          setState("listening", "Kuuntelee vielä");
-          try {
-            const extra = await listenOnce({
-              maxMillis: SENTENCE_CONFIRM_MS,
-              silenceMillis: SENTENCE_CONFIRM_SILENCE_MS,
-            });
-            addTranscriptPiece(pieces, extra);
-            if (cleanTranscript(pieces.join(" ")) === combined) return combined;
-            continue;
-          } catch (error) {
-            if (error.message === "empty_transcript") return combined;
-            throw error;
-          }
-        }
+        const heardEnoughSilence = Boolean(combined && lastHeardAt && Date.now() - lastHeardAt >= SENTENCE_SILENCE_MS);
+        if (heardEnoughSilence && isUsableTurn(combined)) return finishUserTranscript(combined);
 
         setState("listening", combined ? "Kuuntelee loppuun" : "Kuuntelee lausetta");
 
         try {
           const remaining = SENTENCE_MAX_LISTEN_MS - (Date.now() - startedAt);
+          const waitingForStart = !combined;
+          const before = cleanTranscript(pieces.join(" "));
           const fragment = await listenOnce({
-            maxMillis: Math.max(2600, Math.min(9000, remaining)),
+            maxMillis: Math.max(
+              waitingForStart ? 3000 : 900,
+              Math.min(waitingForStart ? FIRST_LISTEN_MAX_MS : CONTINUATION_LISTEN_MS, remaining),
+            ),
             silenceMillis: SENTENCE_SILENCE_MS,
           });
           addTranscriptPiece(pieces, fragment);
+          if (cleanTranscript(pieces.join(" ")) !== before) {
+            lastHeardAt = Date.now();
+          }
         } catch (error) {
           const partial = cleanTranscript(pieces.join(" "));
           if (error.message === "empty_transcript") {
-            if (partial && looksLikeFullSentence(partial, startedAt)) return partial;
-            await sleep(250);
+            if (partial && lastHeardAt && Date.now() - lastHeardAt >= SENTENCE_SILENCE_MS && isUsableTurn(partial)) return finishUserTranscript(partial);
+            await sleep(150);
             continue;
           }
           throw error;
         }
 
-        await sleep(250);
+        await sleep(80);
       }
 
       const transcript = cleanTranscript(pieces.join(" "));
-      if (transcript) return transcript;
+      if (transcript && isUsableTurn(transcript)) return finishUserTranscript(transcript);
       throw new Error("empty_transcript");
     }
 
@@ -729,6 +786,12 @@
 
     async function handleTranscript(transcript) {
       const data = await roast(transcript);
+      console.info("Soita Samille heard", {
+        transcript,
+        focus: data.focus || "",
+        keywords: data.keywords || [],
+        reply: data.reply,
+      });
       lastReply = data.reply;
       recentReplies.push(data.reply);
       recentReplies = recentReplies.slice(-80);
@@ -844,6 +907,7 @@
       } finally {
         callActive = false;
         busy = false;
+        stopMicMonitor();
         setState("idle", finalStatus);
       }
     }
@@ -867,6 +931,7 @@
     stopButton.addEventListener("click", () => {
       callActive = false;
       stopAudio();
+      stopMicMonitor();
       if (recognition) recognition.abort();
       busy = false;
       setState("idle", "Linja vapaa");
