@@ -435,45 +435,130 @@
       }
     }
 
-    function listenOnce() {
+    const SENTENCE_MIN_LISTEN_MS = 2800;
+    const SENTENCE_MAX_LISTEN_MS = 12000;
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function cleanTranscript(text) {
+      return text.replace(/\s+/g, " ").trim();
+    }
+
+    function transcriptWordCount(text) {
+      return cleanTranscript(text).split(/\s+/).filter(Boolean).length;
+    }
+
+    function hasSentencePunctuation(text) {
+      return /(?:[.!?]|\.\.\.)\s*$/.test(cleanTranscript(text));
+    }
+
+    function looksLikeFullSentence(text, startedAt) {
+      const wordCount = transcriptWordCount(text);
+      const elapsed = Date.now() - startedAt;
+      if (!wordCount) return false;
+      if (hasSentencePunctuation(text) && (wordCount >= 2 || elapsed >= 1600)) return true;
+      if (wordCount >= 10) return true;
+      if (wordCount >= 5 && elapsed >= SENTENCE_MIN_LISTEN_MS) return true;
+      if (wordCount >= 3 && elapsed >= 3200) return true;
+      if (wordCount >= 2 && elapsed >= 4200) return true;
+      return false;
+    }
+
+    function addTranscriptPiece(pieces, piece) {
+      const cleanPiece = cleanTranscript(piece);
+      if (!cleanPiece) return;
+      const previous = cleanTranscript(pieces.join(" "));
+      const pieceKey = cleanPiece.toLocaleLowerCase("fi-FI");
+      const previousWords = previous.split(/\s+/).filter(Boolean);
+      const pieceWords = cleanPiece.split(/\s+/).filter(Boolean);
+      const previousTail = previousWords.slice(-pieceWords.length).join(" ").toLocaleLowerCase("fi-FI");
+      if (previousTail === pieceKey) return;
+      pieces.push(cleanPiece);
+    }
+
+    function listenOnce({ maxMillis = 6500, silenceMillis = 1100 } = {}) {
       return new Promise((resolve, reject) => {
         if (!SpeechRecognition) {
           reject(new Error("speech_recognition_missing"));
           return;
         }
 
-        recognition = new SpeechRecognition();
-        recognition.lang = "fi-FI";
-        recognition.interimResults = true;
-        recognition.continuous = false;
-        recognition.maxAlternatives = 1;
+        const currentRecognition = new SpeechRecognition();
+        recognition = currentRecognition;
+        currentRecognition.lang = "fi-FI";
+        currentRecognition.interimResults = true;
+        currentRecognition.continuous = true;
+        currentRecognition.maxAlternatives = 1;
 
         let finalText = "";
         let interimText = "";
         let settled = false;
+        let idleTimer = null;
+        let hardTimer = null;
+
+        const fullText = () => cleanTranscript(`${finalText} ${interimText}`);
+
+        const clearTimers = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          if (hardTimer) clearTimeout(hardTimer);
+          idleTimer = null;
+          hardTimer = null;
+        };
+
+        const stopRecognition = () => {
+          try {
+            currentRecognition.onend = null;
+            currentRecognition.stop();
+          } catch {
+          }
+        };
+
+        const finishCurrentText = () => {
+          if (settled) return;
+          const text = fullText();
+          if (text) {
+            stopRecognition();
+            finish(text);
+          } else {
+            fail("empty_transcript");
+          }
+        };
+
+        const scheduleIdleCheck = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(finishCurrentText, silenceMillis);
+        };
 
         const fail = (message) => {
           if (settled) return;
           settled = true;
+          clearTimers();
+          if (recognition === currentRecognition) recognition = null;
           reject(new Error(message));
         };
 
         const finish = (transcript) => {
           if (settled) return;
           settled = true;
-          resolve(transcript);
+          clearTimers();
+          if (recognition === currentRecognition) recognition = null;
+          resolve(cleanTranscript(transcript));
         };
 
-        recognition.onresult = (event) => {
+        currentRecognition.onresult = (event) => {
           interimText = "";
           for (let i = event.resultIndex; i < event.results.length; i += 1) {
             const part = event.results[i][0].transcript.trim();
             if (event.results[i].isFinal) finalText += `${part} `;
             else interimText += `${part} `;
           }
+          scheduleIdleCheck();
+          if (hasSentencePunctuation(fullText())) finishCurrentText();
         };
 
-        recognition.onerror = (event) => {
+        currentRecognition.onerror = (event) => {
           if (event.error === "not-allowed" || event.error === "service-not-allowed") {
             fail("mic_not_allowed");
             return;
@@ -483,25 +568,69 @@
             return;
           }
           if (event.error === "no-speech") {
+            if (fullText()) {
+              finishCurrentText();
+              return;
+            }
             fail("empty_transcript");
             return;
           }
           fail("speech_recognition_error");
         };
-        recognition.onend = () => {
+        currentRecognition.onend = () => {
           if (settled) return;
-          const transcript = (finalText || interimText).trim();
+          const transcript = fullText();
           if (transcript) finish(transcript);
           else fail("empty_transcript");
         };
 
-        setState("listening", "Kuuntelee");
         try {
-          recognition.start();
+          currentRecognition.start();
+          hardTimer = setTimeout(() => {
+            const text = fullText();
+            if (text) {
+              stopRecognition();
+              finish(text);
+            } else {
+              fail("empty_transcript");
+            }
+          }, maxMillis);
         } catch {
           fail("speech_recognition_error");
         }
       });
+    }
+
+    async function listenForSentence() {
+      const startedAt = Date.now();
+      const pieces = [];
+
+      while (callActive && Date.now() - startedAt < SENTENCE_MAX_LISTEN_MS) {
+        const combined = cleanTranscript(pieces.join(" "));
+        if (combined && looksLikeFullSentence(combined, startedAt)) return combined;
+
+        setState("listening", combined ? "Kuuntelee loppuun" : "Kuuntelee lausetta");
+
+        try {
+          const remaining = SENTENCE_MAX_LISTEN_MS - (Date.now() - startedAt);
+          const fragment = await listenOnce({ maxMillis: Math.max(1800, Math.min(6500, remaining)) });
+          addTranscriptPiece(pieces, fragment);
+        } catch (error) {
+          const partial = cleanTranscript(pieces.join(" "));
+          if (error.message === "empty_transcript") {
+            if (partial && looksLikeFullSentence(partial, startedAt)) return partial;
+            await sleep(250);
+            continue;
+          }
+          throw error;
+        }
+
+        await sleep(250);
+      }
+
+      const transcript = cleanTranscript(pieces.join(" "));
+      if (transcript) return transcript;
+      throw new Error("empty_transcript");
     }
 
     async function roast(transcript) {
@@ -578,7 +707,7 @@
         await speak(greeting);
         while (callActive) {
           try {
-            const transcript = await listenOnce();
+            const transcript = await listenForSentence();
             if (!callActive) break;
             await handleTranscript(transcript);
           } catch (error) {
