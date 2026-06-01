@@ -4,3 +4,4 @@ __pycache__/
 *.pid
 .env
 tts-test.wav
+tools/

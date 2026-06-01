@@ -48,11 +48,21 @@ cd "E:\SoitaSamille"
 Jaa komennon tulostama `https://...`-linkki. Sen kautta mobiiliselaimen pitäisi
 voida näyttää mikrofoniluvan pop-up.
 
+Pysäytä tunneli:
+
+```powershell
+.\stop-public-link.ps1
+```
+
 Jos tunnelityökalua ei ole:
 
 ```powershell
-winget install Cloudflare.cloudflared
+.\install-cloudflared-local.ps1
+.\start-public-link.ps1
 ```
+
+`install-cloudflared-local.ps1` lataa Cloudflaren `cloudflared.exe`-tiedoston
+paikalliseen `tools`-kansioon. Sitä ei commitata repoon.
 
 ## Toiminta
 

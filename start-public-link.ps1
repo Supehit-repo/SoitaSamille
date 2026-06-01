@@ -6,7 +6,14 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "Mobiilin mikki tarvitsee HTTPS-linkin. HTTP-lahiverkkolinkki ei riita."
 
-$cloudflared = Get-Command cloudflared -ErrorAction SilentlyContinue
+$localCloudflared = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "tools\cloudflared.exe"
+$cloudflared = $null
+if (Test-Path -LiteralPath $localCloudflared) {
+    $cloudflared = [pscustomobject]@{ Source = $localCloudflared }
+} else {
+    $cloudflared = Get-Command cloudflared -ErrorAction SilentlyContinue
+}
+
 if ($cloudflared) {
     Write-Host "Kaynnistetaan Cloudflare quick tunnel..."
     & $cloudflared.Source tunnel --url "http://localhost:$Port"

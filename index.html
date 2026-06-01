@@ -308,6 +308,22 @@
     let recentReplies = [];
     let audioUnlocked = false;
 
+    function isLocalAccess() {
+      return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+    }
+
+    function assertBrowserCanUseMic() {
+      if (!window.isSecureContext && !isLocalAccess()) {
+        throw new Error("insecure_context");
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("media_api_missing");
+      }
+      if (!SpeechRecognition) {
+        throw new Error("speech_recognition_missing");
+      }
+    }
+
     function setState(state, text) {
       app.classList.toggle("is-listening", state === "listening");
       app.classList.toggle("is-thinking", state === "thinking");
@@ -398,10 +414,6 @@
     }
 
     async function requestMicPermission() {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        return { ok: false, reason: "no_media_api" };
-      }
-
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach((track) => track.stop());
@@ -507,6 +519,10 @@
       switch (error.message) {
         case "empty_transcript":
           return "Et sanonut mitään. Vihdoinkin harkintaa.";
+        case "insecure_context":
+          return "Avaa HTTPS-linkki. HTTP ei saa mikkiä.";
+        case "media_api_missing":
+          return "Tämä selain piilottaa mikin. Hyvä alku.";
         case "speech_recognition_missing":
           return "Tämä selain ei ymmärrä puheohjausta. Ei siis ihme, että sovitte yhteen.";
         case "mic_not_allowed":
@@ -529,11 +545,9 @@
 
       try {
         await unlockAudio();
+        assertBrowserCanUseMic();
         setState("thinking", "Pyydetään mikkiä");
         const micProbe = await requestMicPermission();
-        if (!micProbe.ok) {
-          setState("listening", "Yritetään puheentunnistusta");
-        }
         await speak(greeting);
         while (callActive) {
           try {
@@ -554,6 +568,10 @@
         if (line) await safeSpeak(line);
         if (error.message === "mic_not_allowed") {
           finalStatus = "Salli mikki ja paina Soita";
+        } else if (error.message === "insecure_context") {
+          finalStatus = "Avaa HTTPS-linkillä";
+        } else if (error.message === "media_api_missing") {
+          finalStatus = "Selain ei anna mikkiä";
         } else if (error.message === "mic_unavailable") {
           finalStatus = "Mikki ei näy selaimelle";
         } else if (!line) {
