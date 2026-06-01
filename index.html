@@ -298,7 +298,7 @@
     audioPlayer.style.display = "none";
     document.body.appendChild(audioPlayer);
     const greeting = "no mitä nyt taas?";
-    const LISTEN_AFTER_SPEAK_MS = 650;
+    const LISTEN_AFTER_SPEAK_MS = 900;
     const SILENT_RETRY_MS = 450;
     const ECHO_GUARD_MS = 9000;
 
@@ -313,6 +313,7 @@
     let currentAudioUrl = "";
     let currentAudioResolve = null;
     let recentReplies = [];
+    let conversationTurns = [];
     let audioUnlocked = false;
     let recentErrorReplies = [];
 
@@ -445,8 +446,11 @@
       }
     }
 
-    const SENTENCE_MIN_LISTEN_MS = 2800;
-    const SENTENCE_MAX_LISTEN_MS = 12000;
+    const SENTENCE_MIN_LISTEN_MS = 5200;
+    const SENTENCE_MAX_LISTEN_MS = 20000;
+    const SENTENCE_SILENCE_MS = 2300;
+    const SENTENCE_CONFIRM_MS = 1800;
+    const SENTENCE_CONFIRM_SILENCE_MS = 900;
 
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
@@ -512,10 +516,9 @@
       const elapsed = Date.now() - startedAt;
       if (!wordCount) return false;
       if (hasSentencePunctuation(text) && (wordCount >= 2 || elapsed >= 1600)) return true;
-      if (wordCount >= 10) return true;
-      if (wordCount >= 5 && elapsed >= SENTENCE_MIN_LISTEN_MS) return true;
-      if (wordCount >= 3 && elapsed >= 3200) return true;
-      if (wordCount >= 2 && elapsed >= 4200) return true;
+      if (wordCount >= 14) return true;
+      if (wordCount >= 7 && elapsed >= SENTENCE_MIN_LISTEN_MS) return true;
+      if (wordCount >= 4 && elapsed >= 7200) return true;
       return false;
     }
 
@@ -531,7 +534,7 @@
       pieces.push(cleanPiece);
     }
 
-    function listenOnce({ maxMillis = 6500, silenceMillis = 1100 } = {}) {
+    function listenOnce({ maxMillis = 9000, silenceMillis = SENTENCE_SILENCE_MS } = {}) {
       return new Promise((resolve, reject) => {
         if (!SpeechRecognition) {
           reject(new Error("speech_recognition_missing"));
@@ -548,6 +551,7 @@
         let finalText = "";
         let interimText = "";
         let settled = false;
+        let heardSpeech = false;
         let idleTimer = null;
         let hardTimer = null;
 
@@ -602,6 +606,7 @@
 
         currentRecognition.onresult = (event) => {
           interimText = "";
+          heardSpeech = true;
           for (let i = event.resultIndex; i < event.results.length; i += 1) {
             const part = event.results[i][0].transcript.trim();
             if (event.results[i].isFinal) finalText += `${part} `;
@@ -633,8 +638,15 @@
         currentRecognition.onend = () => {
           if (settled) return;
           const transcript = fullText();
-          if (transcript) finish(transcript);
-          else fail("empty_transcript");
+          if (transcript) {
+            if (heardSpeech) {
+              idleTimer = setTimeout(finishCurrentText, Math.min(900, silenceMillis));
+            } else {
+              finish(transcript);
+            }
+          } else {
+            fail("empty_transcript");
+          }
         };
 
         try {
@@ -660,13 +672,30 @@
 
       while (callActive && Date.now() - startedAt < SENTENCE_MAX_LISTEN_MS) {
         const combined = cleanTranscript(pieces.join(" "));
-        if (combined && looksLikeFullSentence(combined, startedAt)) return combined;
+        if (combined && looksLikeFullSentence(combined, startedAt)) {
+          setState("listening", "Kuuntelee vielä");
+          try {
+            const extra = await listenOnce({
+              maxMillis: SENTENCE_CONFIRM_MS,
+              silenceMillis: SENTENCE_CONFIRM_SILENCE_MS,
+            });
+            addTranscriptPiece(pieces, extra);
+            if (cleanTranscript(pieces.join(" ")) === combined) return combined;
+            continue;
+          } catch (error) {
+            if (error.message === "empty_transcript") return combined;
+            throw error;
+          }
+        }
 
         setState("listening", combined ? "Kuuntelee loppuun" : "Kuuntelee lausetta");
 
         try {
           const remaining = SENTENCE_MAX_LISTEN_MS - (Date.now() - startedAt);
-          const fragment = await listenOnce({ maxMillis: Math.max(1800, Math.min(6500, remaining)) });
+          const fragment = await listenOnce({
+            maxMillis: Math.max(2600, Math.min(9000, remaining)),
+            silenceMillis: SENTENCE_SILENCE_MS,
+          });
           addTranscriptPiece(pieces, fragment);
         } catch (error) {
           const partial = cleanTranscript(pieces.join(" "));
@@ -691,7 +720,7 @@
       const response = await fetch("/api/roast", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript, recentReplies }),
+        body: JSON.stringify({ transcript, recentReplies, conversationTurns }),
       });
 
       if (!response.ok) throw new Error("roast_failed");
@@ -703,6 +732,13 @@
       lastReply = data.reply;
       recentReplies.push(data.reply);
       recentReplies = recentReplies.slice(-80);
+      conversationTurns.push({
+        user: transcript,
+        reply: data.reply,
+        focus: data.focus || "",
+        keywords: Array.isArray(data.keywords) ? data.keywords.slice(0, 5) : [],
+      });
+      conversationTurns = conversationTurns.slice(-12);
       await speak(data.reply);
     }
 
@@ -750,6 +786,10 @@
       if (busy) return;
       busy = true;
       callActive = true;
+      recentReplies = [];
+      conversationTurns = [];
+      lastAcceptedTranscript = "";
+      lastAcceptedAt = 0;
       let finalStatus = "Linja vapaa";
 
       try {

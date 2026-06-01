@@ -29,6 +29,8 @@ Perusviesti: käyttäjän pitäisi itse vähän miettiä ennen kuin soittelee.
 Reagoi käyttäjän sanoihin, älä heitä irrallista fraasia.
 Poimi käyttäjän lauseesta konkreettinen sana, verbi tai aihe ja vittuile juuri siitä.
 Jos vastaus toimisi mihin tahansa kysymykseen, se on huono vastaus.
+Muista keskustelun aiemmat aiheet ja rankaise toistosta nokkelasti.
+Hae tyyliä suomalaisesta kaskusta: konkreettinen tilanne, lyhyt kärki, sanaleikki tai kuiva käännös.
 Käytä välillä sanaleikkiä, vähättelyä, väärinymmärrystä tai tylyä arkivertausta.
 Älä ole akateeminen. Älä selitä. Älä pehmennä. Älä toista aiempia vastauksia.
 Älä hauku suojattuja ominaisuuksia, uhkaile, toivo vahinkoa tai mene seksuaaliseksi.
@@ -211,6 +213,10 @@ STOPWORDS = {
     "aina",
     "asia",
     "että",
+    "edelleen",
+    "edelleenkään",
+    "ei",
+    "eikö",
     "hei",
     "ihan",
     "joku",
@@ -249,6 +255,8 @@ STOPWORDS = {
     "oli",
     "olla",
     "olisi",
+    "en",
+    "et",
     "pitää",
     "pitäisi",
     "saada",
@@ -269,8 +277,12 @@ STOPWORDS = {
     "tämä",
     "tässä",
     "tuo",
+    "taas",
+    "uudestaan",
     "vaan",
     "vai",
+    "vielä",
+    "vieläkään",
     "vähän",
     "voiko",
     "voin",
@@ -279,6 +291,8 @@ STOPWORDS = {
     "näkyykö",
     "toimiiko",
     "onnistuuko",
+    "älä",
+    "älkää",
 }
 
 NEGATIONS = {"ei", "eikö", "en", "et", "älä", "älkää"}
@@ -307,9 +321,16 @@ def extract_focus_phrase(transcript):
         return ""
 
     for index, word in enumerate(words[:-1]):
-        if word in NEGATIONS and is_focus_word(words[index + 1]):
+        if word in NEGATIONS:
+            next_index = None
+            for candidate_index in range(index + 1, min(index + 4, len(words))):
+                if is_focus_word(words[candidate_index]):
+                    next_index = candidate_index
+                    break
+            if next_index is None:
+                continue
             start = index - 1 if index > 0 and is_focus_word(words[index - 1]) else index
-            return " ".join(words[start : index + 2])
+            return " ".join(words[start : index + 1] + [words[next_index]])
 
     for size in (3, 2):
         for index in range(0, len(words) - size + 1):
@@ -385,6 +406,114 @@ def reply_mentions_transcript(reply, transcript):
     return any(term in normalized_reply for term in terms[:5])
 
 
+def focus_keywords(transcript, max_items=5):
+    keywords = []
+    for term in extract_focus_terms(transcript):
+        if term not in keywords:
+            keywords.append(term)
+        if len(keywords) >= max_items:
+            break
+    return keywords
+
+
+def sanitize_conversation_turns(raw_turns):
+    if not isinstance(raw_turns, list):
+        return []
+
+    turns = []
+    for item in raw_turns[-12:]:
+        if not isinstance(item, dict):
+            continue
+        user = " ".join(str(item.get("user", "")).split())[:500]
+        reply = " ".join(str(item.get("reply", "")).split())[:240]
+        focus = " ".join(str(item.get("focus", "")).split())[:120]
+        if user or reply:
+            turns.append({"user": user, "reply": reply, "focus": focus})
+    return turns
+
+
+def conversation_focuses(conversation_turns):
+    focuses = []
+    for turn in conversation_turns:
+        focus = turn.get("focus") or extract_focus_phrase(turn.get("user", ""))
+        focus = " ".join(str(focus).split())
+        if focus and focus not in focuses:
+            focuses.append(focus)
+    return focuses
+
+
+def memory_roasts(transcript, conversation_turns):
+    focus = extract_focus_phrase(transcript)
+    if not focus:
+        return []
+
+    prior_focuses = conversation_focuses(conversation_turns)
+    last_focus = prior_focuses[-1] if prior_focuses else ""
+    roasts = []
+
+    if focus in prior_focuses:
+        roasts.extend(
+            [
+                f"Palasit taas aiheeseen {focus}. Edistys välttelee.",
+                f"Tuo {focus} kuultiin jo. Et oppinut.",
+                f"Sama {focus} uudestaan. Rohkea alisuoritus.",
+                f"Aihe {focus} kiertää, kuten ajattelusi.",
+                f"Me käsittelimme {focus}. Sinä vain hävisit.",
+            ]
+        )
+    elif last_focus:
+        roasts.extend(
+            [
+                f"Äsken {last_focus}, nyt {focus}. Paniikki vaihtaa takkia.",
+                f"Hyppäsit {last_focus}sta aiheeseen {focus}. Hallinta loistaa poissaolollaan.",
+                f"Jos {last_focus} jäi kesken, {focus} ei pelasta.",
+                f"Vai nyt {focus}. Edellinenkään ajatus ei ehtinyt.",
+            ]
+        )
+
+    if len(conversation_turns) >= 2:
+        roasts.extend(
+            [
+                f"Tämä on jo kolmas kierros ja aihe {focus} karkaa.",
+                f"Puhelu pitenee, mutta aihe {focus} ei kirkastu.",
+                f"Keskusteluhistoria sanoo: aihe {focus} voittaa sinut.",
+            ]
+        )
+
+    return roasts
+
+
+def kasku_roasts(transcript, conversation_turns=None):
+    focus = extract_focus_phrase(transcript)
+    if not focus:
+        return []
+
+    prior_focuses = conversation_focuses(conversation_turns or [])
+    last_focus = prior_focuses[-1] if prior_focuses else ""
+    roasts = [
+        f"Niin puhelin vastaa kuin aiheesta {focus} soitetaan.",
+        f"Tästä tulisi kasku, mutta {focus} pilasi sen.",
+        f"Vanha kansa sanoisi: aihe {focus} ei auta sinua.",
+        f"Kaskun opetus: aihe {focus} ei tykkää sinusta.",
+        f"Lyhyt tarina: aihe {focus} tuli, sinä hävisit.",
+        f"Tuossa oli kaskun alku ja käyttäjän loppu.",
+        f"Ennen tehtiin kaskuja, nyt sinä teet aiheesta {focus} ongelman.",
+        f"Aihe {focus} on kuin kylmä kahvi: ei auta tähän.",
+        f"Kansanperinne varoitti jo aiheesta {focus}.",
+        f"Tuo {focus} on valmis kasku ilman loppua.",
+    ]
+
+    if last_focus and last_focus != focus:
+        roasts.extend(
+            [
+                f"Kasku vaihtui {last_focus}sta {focus}iin, taso ei.",
+                f"Ensin {last_focus}, sitten {focus}. Juoni karkasi.",
+            ]
+        )
+
+    return roasts
+
+
 def pick_unique(candidates, recent_replies=None):
     recent = {normalize_reply(reply) for reply in (recent_replies or [])}
     fresh = [candidate for candidate in candidates if normalize_reply(candidate) not in recent]
@@ -405,11 +534,16 @@ def pick_unique(candidates, recent_replies=None):
     return f"Mieti itse ennen soittoa, osa {len(recent) + 1}."
 
 
-def local_roast(transcript, recent_replies=None):
+def local_roast(transcript, recent_replies=None, conversation_turns=None):
     clean = " ".join((transcript or "").split())
     lower = clean.lower()
+    conversation_turns = conversation_turns or []
+    focus = extract_focus_phrase(clean)
+    repeated_focus = bool(focus and focus in conversation_focuses(conversation_turns))
+    memory_candidates = memory_roasts(clean, conversation_turns)
     contextual_candidates = contextual_roasts(clean)
-    candidates = list(contextual_candidates)
+    kasku_candidates = kasku_roasts(clean, conversation_turns)
+    candidates = list(memory_candidates) + list(contextual_candidates) + list(kasku_candidates)
 
     if not clean:
         return pick_unique(
@@ -438,19 +572,29 @@ def local_roast(transcript, recent_replies=None):
 
     specific_candidates = list(candidates)
     candidates.extend(TRADITIONAL_FRAMES if random.random() < 0.55 else FALLBACKS)
+    if repeated_focus and memory_candidates:
+        return pick_unique(memory_candidates, recent_replies)
+    if memory_candidates and random.random() < 0.7:
+        return pick_unique(memory_candidates + contextual_candidates + kasku_candidates, recent_replies)
     if contextual_candidates:
-        return pick_unique(contextual_candidates, recent_replies)
+        return pick_unique(contextual_candidates + kasku_candidates, recent_replies)
     if specific_candidates and random.random() < 0.82:
         return pick_unique(specific_candidates, recent_replies)
     return pick_unique(candidates, recent_replies)
 
 
-def openai_roast(transcript, recent_replies=None):
+def openai_roast(transcript, recent_replies=None, conversation_turns=None):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return None
 
     recent = "\n".join(f"- {reply}" for reply in (recent_replies or [])[-80:])
+    turns = sanitize_conversation_turns(conversation_turns or [])
+    history = "\n".join(
+        f"- Käyttäjä: {turn.get('user', '')} | Sami: {turn.get('reply', '')}"
+        for turn in turns[-8:]
+    )
+    keywords = ", ".join(focus_keywords(transcript)) or "ei selviä"
 
     payload = {
         "model": OPENAI_MODEL,
@@ -460,6 +604,10 @@ def openai_roast(transcript, recent_replies=None):
                 "role": "user",
                 "content": (
                     f"Käyttäjä sanoi: {transcript}\n\n"
+                    f"Avainsanat: {keywords}\n\n"
+                    f"Keskustelu tähän asti:\n{history or '- ei aiempia vuoroja'}\n\n"
+                    "Jos käyttäjä palaa samaan aiheeseen, kuittaa se nokkelasti.\n"
+                    "Vastauksen pitää selvästi liittyä käyttäjän tämänhetkiseen aiheeseen.\n\n"
                     f"Älä toista näitä viime vastauksia:\n{recent or '- ei aiempia'}"
                 ),
             },
@@ -598,19 +746,22 @@ class Handler(SimpleHTTPRequestHandler):
         if not isinstance(recent_replies, list):
             recent_replies = []
         recent_replies = [str(reply)[:200] for reply in recent_replies[-80:]]
-        reply = openai_roast(transcript, recent_replies)
+        conversation_turns = sanitize_conversation_turns(payload.get("conversationTurns", []))
+        reply = openai_roast(transcript, recent_replies, conversation_turns)
         if reply and not reply_mentions_transcript(reply, transcript):
             reply = None
         source = "openai" if reply else "local"
-        reply = reply or local_roast(transcript, recent_replies)
+        reply = reply or local_roast(transcript, recent_replies, conversation_turns)
         if normalize_reply(reply) in {normalize_reply(item) for item in recent_replies}:
-            reply = local_roast(transcript, recent_replies)
+            reply = local_roast(transcript, recent_replies, conversation_turns)
 
         self.send_json(
             200,
             {
                 "reply": reply,
                 "source": source,
+                "focus": extract_focus_phrase(transcript),
+                "keywords": focus_keywords(transcript),
                 "noStorage": True,
             },
         )
