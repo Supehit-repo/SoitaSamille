@@ -119,7 +119,7 @@ paikalliseen `tools`-kansioon. Sitä ei commitata repoon.
 ## Toiminta
 
 - Puhelimen painallus pyytää mikrofoniluvan.
-- Puhelu alkaa repliikillä: "Sami.. mitä nyt?"
+- Puhelu alkaa repliikillä: "no mitä nyt taas?"
 - Selain kuuntelee vuoron, Sami vastaa, ja keskustelu jatkuu kunnes painetaan
   `Lopeta`.
 - Vastaus muodostetaan WAV-ääneksi HH-TTSservicen kautta:

@@ -297,10 +297,17 @@
     audioPlayer.setAttribute("playsinline", "");
     audioPlayer.style.display = "none";
     document.body.appendChild(audioPlayer);
-    const greeting = "Sami.. mitä nyt?";
+    const greeting = "no mitä nyt taas?";
+    const LISTEN_AFTER_SPEAK_MS = 650;
+    const SILENT_RETRY_MS = 450;
+    const ECHO_GUARD_MS = 9000;
 
     let recognition = null;
     let lastReply = "";
+    let lastSpokenBySami = "";
+    let lastSpokenAt = 0;
+    let lastAcceptedTranscript = "";
+    let lastAcceptedAt = 0;
     let busy = false;
     let callActive = false;
     let currentAudioUrl = "";
@@ -375,6 +382,8 @@
 
     async function speak(text) {
       stopAudio();
+      lastSpokenBySami = text;
+      lastSpokenAt = Date.now();
       setState("speaking", "Linja puhuu");
 
       const response = await fetch("/api/speech", {
@@ -411,6 +420,7 @@
         });
       });
 
+      lastSpokenAt = Date.now();
       stopAudio();
     }
 
@@ -444,6 +454,49 @@
 
     function cleanTranscript(text) {
       return text.replace(/\s+/g, " ").trim();
+    }
+
+    function normalizeSpeech(text) {
+      return cleanTranscript(text)
+        .toLocaleLowerCase("fi-FI")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^0-9a-z\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function speechTokens(text) {
+      return normalizeSpeech(text).split(/\s+/).filter((token) => token.length > 1);
+    }
+
+    function tokenOverlapScore(left, right) {
+      const leftTokens = speechTokens(left);
+      const rightTokens = speechTokens(right);
+      if (!leftTokens.length || !rightTokens.length) return 0;
+      const rightSet = new Set(rightTokens);
+      const overlap = leftTokens.filter((token) => rightSet.has(token)).length;
+      return overlap / Math.min(leftTokens.length, rightTokens.length);
+    }
+
+    function isSimilarSpeech(left, right) {
+      const leftNorm = normalizeSpeech(left);
+      const rightNorm = normalizeSpeech(right);
+      if (!leftNorm || !rightNorm) return false;
+      if (leftNorm === rightNorm) return true;
+      if (leftNorm.length >= 8 && rightNorm.includes(leftNorm)) return true;
+      if (rightNorm.length >= 8 && leftNorm.includes(rightNorm)) return true;
+      return tokenOverlapScore(left, right) >= 0.72;
+    }
+
+    function isIgnorableTranscript(transcript) {
+      const normalized = normalizeSpeech(transcript);
+      const tokens = speechTokens(transcript);
+      const now = Date.now();
+      if (!normalized || tokens.length < 2) return true;
+      if (lastSpokenBySami && now - lastSpokenAt < ECHO_GUARD_MS && isSimilarSpeech(transcript, lastSpokenBySami)) return true;
+      if (lastAcceptedTranscript && now - lastAcceptedAt < ECHO_GUARD_MS && normalizeSpeech(lastAcceptedTranscript) === normalized) return true;
+      return false;
     }
 
     function transcriptWordCount(text) {
@@ -707,13 +760,27 @@
         await speak(greeting);
         while (callActive) {
           try {
+            await sleep(LISTEN_AFTER_SPEAK_MS);
+            if (!callActive) break;
             const transcript = await listenForSentence();
             if (!callActive) break;
+            if (isIgnorableTranscript(transcript)) {
+              setState("listening", "Kuuntelee");
+              await sleep(SILENT_RETRY_MS);
+              continue;
+            }
+            lastAcceptedTranscript = transcript;
+            lastAcceptedAt = Date.now();
             await handleTranscript(transcript);
           } catch (error) {
             if (!callActive) break;
             if (error.message === "speech_recognition_missing" || error.message === "mic_not_allowed" || error.message === "mic_unavailable") {
               throw error;
+            }
+            if (error.message === "empty_transcript") {
+              setState("listening", "Kuuntelee");
+              await sleep(SILENT_RETRY_MS);
+              continue;
             }
             const line = spokenError(error);
             if (line) await safeSpeak(line);
