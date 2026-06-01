@@ -18,7 +18,8 @@ cd "E:\SoitaSamille"
 ```
 
 Tämä rakentaa ja käynnistää `soita-samille`-kontin. Kontti palvelee HTML:n ja
-API:n osoitteessa:
+API:n osoitteessa. Skripti yrittaa kaynnistaa HH-TTSservicen ensin oletuspolusta
+`E:\AgentX\HH-TTSservice`, jotta aani ei jaa tilaan `TTS poikki`:
 
 ```text
 http://localhost:5177/
@@ -30,6 +31,12 @@ Pysäytys:
 .\stop-container.ps1
 ```
 
+Jos haluat samalla pysayttaa myos HH-TTSservicen:
+
+```powershell
+.\stop-container.ps1 -StopTts
+```
+
 Tila:
 
 ```powershell
@@ -37,7 +44,8 @@ Tila:
 ```
 
 Kontti tarvitsee HH-TTSservicen käyntiin hostilla portissa `5620`. Kontin
-oletus-TTS-osoite on:
+oletus-TTS-osoite on. Jos HH-TTS on muualla, anna `-TtsPort` tai aseta
+`HH_TTS_URL` ennen kaynnistysta:
 
 ```text
 http://host.docker.internal:5620/speak

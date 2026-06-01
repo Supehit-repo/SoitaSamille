@@ -350,7 +350,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             return json.loads(self.rfile.read(length).decode("utf-8")), None
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return None, (400, {"error": "bad_json"})
 
     def synthesize_hh_tts(self, text, voice):

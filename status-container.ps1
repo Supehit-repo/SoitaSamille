@@ -14,6 +14,13 @@ try {
     } catch {
         Write-Host "HTTP health ei vastaa portissa $Port."
     }
+
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:5620/readyz" -TimeoutSec 3 | Out-Null
+        Write-Host "HH-TTSservice: paalla"
+    } catch {
+        Write-Host "HH-TTSservice: ei vastaa portissa 5620"
+    }
 } finally {
     Pop-Location
 }
