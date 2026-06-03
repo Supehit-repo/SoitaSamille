@@ -668,6 +668,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_index(self):
+        body = (ROOT / "index.html").read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def read_json_payload(self, max_bytes=64 * 1024):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -695,6 +706,10 @@ class Handler(SimpleHTTPRequestHandler):
             return response.read(), response.headers.get("Content-Type", "audio/wav")
 
     def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in {"", "/", "/index.html"}:
+            self.send_index()
+            return
         if self.path == "/healthz":
             self.send_json(200, {"status": "ok", "service": "Soita Samille"})
             return

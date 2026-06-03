@@ -298,7 +298,7 @@
     audioPlayer.style.display = "none";
     document.body.appendChild(audioPlayer);
     const greeting = "no mitä nyt taas?";
-    const LISTEN_AFTER_SPEAK_MS = 700;
+    const LISTEN_AFTER_SPEAK_MS = 300;
     const SILENT_RETRY_MS = 450;
     const ECHO_GUARD_MS = 9000;
 
@@ -515,21 +515,19 @@
       }
     }
 
-    async function finishUserTranscript(transcript) {
-      setState("listening", "Odottaa hiljaisuutta");
-      await waitForMicSilence(micConfirmSilenceMs(transcript));
+    function finishUserTranscript(transcript) {
       return cleanTranscript(transcript);
     }
 
-    const SENTENCE_MAX_LISTEN_MS = 24000;
-    const SENTENCE_SILENCE_MS = 900;
+    const SENTENCE_MAX_LISTEN_MS = 18000;
+    const SENTENCE_SILENCE_MS = 650;
     const FIRST_LISTEN_MAX_MS = 11000;
-    const CONTINUATION_LISTEN_MS = 1600;
+    const CONTINUATION_LISTEN_MS = 900;
     const TURN_MIN_WORDS = 2;
     const DUPLICATE_TRANSCRIPT_GUARD_MS = 2500;
     const MIC_ACTIVE_THRESHOLD = 0.018;
-    const MIC_SILENCE_CONFIRM_MS = 550;
-    const MIC_SILENCE_MAX_WAIT_MS = 2400;
+    const MIC_SILENCE_CONFIRM_MS = 0;
+    const MIC_SILENCE_MAX_WAIT_MS = 0;
 
     let micStream = null;
     let micAudioContext = null;
@@ -594,9 +592,9 @@
 
     function turnEndSilenceMs(text) {
       const wordCount = transcriptWordCount(text);
-      if (wordCount <= 2) return 1250;
-      if (wordCount <= 4) return 1050;
-      return 850;
+      if (wordCount <= 2) return 800;
+      if (wordCount <= 4) return 650;
+      return 500;
     }
 
     function micConfirmSilenceMs(text) {
@@ -770,8 +768,10 @@
             silenceMillis: waitingForStart ? SENTENCE_SILENCE_MS : endSilenceMs,
           });
           addTranscriptPiece(pieces, fragment);
-          if (cleanTranscript(pieces.join(" ")) !== before) {
-            lastHeardAt = Date.now();
+          const updated = cleanTranscript(pieces.join(" "));
+          if (updated !== before) {
+            lastHeardAt = Date.now() - endSilenceMs;
+            if (isUsableTurn(updated)) return finishUserTranscript(updated);
           }
         } catch (error) {
           const partial = cleanTranscript(pieces.join(" "));
