@@ -298,7 +298,7 @@
     audioPlayer.style.display = "none";
     document.body.appendChild(audioPlayer);
     const greeting = "no mitä nyt taas?";
-    const LISTEN_AFTER_SPEAK_MS = 1200;
+    const LISTEN_AFTER_SPEAK_MS = 700;
     const SILENT_RETRY_MS = 450;
     const ECHO_GUARD_MS = 9000;
 
@@ -517,19 +517,19 @@
 
     async function finishUserTranscript(transcript) {
       setState("listening", "Odottaa hiljaisuutta");
-      await waitForMicSilence();
+      await waitForMicSilence(micConfirmSilenceMs(transcript));
       return cleanTranscript(transcript);
     }
 
-    const SENTENCE_MAX_LISTEN_MS = 30000;
-    const SENTENCE_SILENCE_MS = 3000;
-    const FIRST_LISTEN_MAX_MS = 15000;
-    const CONTINUATION_LISTEN_MS = 4200;
+    const SENTENCE_MAX_LISTEN_MS = 24000;
+    const SENTENCE_SILENCE_MS = 900;
+    const FIRST_LISTEN_MAX_MS = 11000;
+    const CONTINUATION_LISTEN_MS = 1600;
     const TURN_MIN_WORDS = 2;
     const DUPLICATE_TRANSCRIPT_GUARD_MS = 2500;
     const MIC_ACTIVE_THRESHOLD = 0.018;
-    const MIC_SILENCE_CONFIRM_MS = 1600;
-    const MIC_SILENCE_MAX_WAIT_MS = 8000;
+    const MIC_SILENCE_CONFIRM_MS = 550;
+    const MIC_SILENCE_MAX_WAIT_MS = 2400;
 
     let micStream = null;
     let micAudioContext = null;
@@ -590,6 +590,20 @@
 
     function transcriptWordCount(text) {
       return cleanTranscript(text).split(/\s+/).filter(Boolean).length;
+    }
+
+    function turnEndSilenceMs(text) {
+      const wordCount = transcriptWordCount(text);
+      if (wordCount <= 2) return 1250;
+      if (wordCount <= 4) return 1050;
+      return 850;
+    }
+
+    function micConfirmSilenceMs(text) {
+      const wordCount = transcriptWordCount(text);
+      if (wordCount <= 2) return 850;
+      if (wordCount <= 4) return 650;
+      return MIC_SILENCE_CONFIRM_MS;
     }
 
     function isUsableTurn(text) {
@@ -738,7 +752,8 @@
 
       while (callActive && Date.now() - startedAt < SENTENCE_MAX_LISTEN_MS) {
         const combined = cleanTranscript(pieces.join(" "));
-        const heardEnoughSilence = Boolean(combined && lastHeardAt && Date.now() - lastHeardAt >= SENTENCE_SILENCE_MS);
+        const endSilenceMs = combined ? turnEndSilenceMs(combined) : SENTENCE_SILENCE_MS;
+        const heardEnoughSilence = Boolean(combined && lastHeardAt && Date.now() - lastHeardAt >= endSilenceMs);
         if (heardEnoughSilence && isUsableTurn(combined)) return finishUserTranscript(combined);
 
         setState("listening", combined ? "Kuuntelee loppuun" : "Kuuntelee lausetta");
@@ -752,7 +767,7 @@
               waitingForStart ? 3000 : 900,
               Math.min(waitingForStart ? FIRST_LISTEN_MAX_MS : CONTINUATION_LISTEN_MS, remaining),
             ),
-            silenceMillis: SENTENCE_SILENCE_MS,
+            silenceMillis: waitingForStart ? SENTENCE_SILENCE_MS : endSilenceMs,
           });
           addTranscriptPiece(pieces, fragment);
           if (cleanTranscript(pieces.join(" ")) !== before) {
@@ -761,7 +776,7 @@
         } catch (error) {
           const partial = cleanTranscript(pieces.join(" "));
           if (error.message === "empty_transcript") {
-            if (partial && lastHeardAt && Date.now() - lastHeardAt >= SENTENCE_SILENCE_MS && isUsableTurn(partial)) return finishUserTranscript(partial);
+            if (partial && lastHeardAt && Date.now() - lastHeardAt >= turnEndSilenceMs(partial) && isUsableTurn(partial)) return finishUserTranscript(partial);
             await sleep(150);
             continue;
           }
