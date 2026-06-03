@@ -31,6 +31,7 @@ Poimi käyttäjän lauseesta konkreettinen sana, verbi tai aihe ja vittuile juur
 Jos vastaus toimisi mihin tahansa kysymykseen, se on huono vastaus.
 Muista keskustelun aiemmat aiheet ja rankaise toistosta nokkelasti.
 Hae tyyliä suomalaisesta kaskusta: konkreettinen tilanne, lyhyt kärki, sanaleikki tai kuiva käännös.
+Jos käyttäjä kysyy rahasta, hinnasta, maksamisesta tai kustannuksista, kuittaa että rahakeskustelut ovat vain köyhiä varten.
 Käytä välillä sanaleikkiä, vähättelyä, väärinymmärrystä tai tylyä arkivertausta.
 Älä ole akateeminen. Älä selitä. Älä pehmennä. Älä toista aiempia vastauksia.
 Älä hauku suojattuja ominaisuuksia, uhkaile, toivo vahinkoa tai mene seksuaaliseksi.
@@ -297,6 +298,40 @@ STOPWORDS = {
 
 NEGATIONS = {"ei", "eikö", "en", "et", "älä", "älkää"}
 
+MONEY_TERMS = {
+    "raha",
+    "rahaa",
+    "rahat",
+    "hintaa",
+    "hinta",
+    "maksaa",
+    "maksa",
+    "maksu",
+    "maksut",
+    "kustannus",
+    "kustannukset",
+    "kulu",
+    "kulut",
+    "budjetti",
+    "euro",
+    "euroa",
+    "halpa",
+    "halpaa",
+    "kallis",
+    "kallista",
+    "köyhä",
+    "köyhät",
+}
+
+MONEY_ROASTS = [
+    "Noi rahakeskustelut on vain köyhiä varten.",
+    "Mitä se maksaa? Köyhien harrastus.",
+    "Rahasta puhuminen on köyhien ajanvietettä.",
+    "Hinta kiinnostaa vain köyhiä, jatka.",
+    "Budjetti on köyhien satuhetki.",
+    "Maksuasiat kuulostaa köyhäilyltä.",
+]
+
 
 def normalize_reply(text):
     return "".join(ch.lower() for ch in text if ch.isalnum() or ch.isspace()).strip()
@@ -304,6 +339,11 @@ def normalize_reply(text):
 
 def transcript_words(text):
     return re.findall(r"[0-9A-Za-zÅÄÖåäö]+", (text or "").lower())
+
+
+def is_money_topic(text):
+    words = set(transcript_words(text))
+    return bool(words & MONEY_TERMS)
 
 
 def is_focus_word(word):
@@ -421,7 +461,7 @@ def sanitize_conversation_turns(raw_turns):
         return []
 
     turns = []
-    for item in raw_turns[-12:]:
+    for item in raw_turns[-50:]:
         if not isinstance(item, dict):
             continue
         user = " ".join(str(item.get("user", "")).split())[:500]
@@ -550,6 +590,8 @@ def local_roast(transcript, recent_replies=None, conversation_turns=None):
             ["Hiljaisuuskin pärjäsi sinua paremmin.", "No nyt tuli paras osuutesi.", "Tuokin oli jo liikaa sisältöä."],
             recent_replies,
         )
+    if is_money_topic(clean):
+        return pick_unique(MONEY_ROASTS, recent_replies)
     if any(word in lower for word in ["miksi", "minkä takia", "mistä johtuu"]):
         candidates.extend(QUESTION_ROASTS["why"])
     if any(word in lower for word in ["miten", "kuinka"]):
@@ -590,9 +632,10 @@ def openai_roast(transcript, recent_replies=None, conversation_turns=None):
 
     recent = "\n".join(f"- {reply}" for reply in (recent_replies or [])[-80:])
     turns = sanitize_conversation_turns(conversation_turns or [])
+    prior_focuses = ", ".join(conversation_focuses(turns)[-12:]) or "ei aiempia aiheita"
     history = "\n".join(
         f"- Käyttäjä: {turn.get('user', '')} | Sami: {turn.get('reply', '')}"
-        for turn in turns[-8:]
+        for turn in turns[-16:]
     )
     keywords = ", ".join(focus_keywords(transcript)) or "ei selviä"
 
@@ -605,6 +648,7 @@ def openai_roast(transcript, recent_replies=None, conversation_turns=None):
                 "content": (
                     f"Käyttäjä sanoi: {transcript}\n\n"
                     f"Avainsanat: {keywords}\n\n"
+                    f"Aiemmat aiheet: {prior_focuses}\n\n"
                     f"Keskustelu tähän asti:\n{history or '- ei aiempia vuoroja'}\n\n"
                     "Jos käyttäjä palaa samaan aiheeseen, kuittaa se nokkelasti.\n"
                     "Vastauksen pitää selvästi liittyä käyttäjän tämänhetkiseen aiheeseen.\n\n"
@@ -762,11 +806,15 @@ class Handler(SimpleHTTPRequestHandler):
             recent_replies = []
         recent_replies = [str(reply)[:200] for reply in recent_replies[-80:]]
         conversation_turns = sanitize_conversation_turns(payload.get("conversationTurns", []))
-        reply = openai_roast(transcript, recent_replies, conversation_turns)
-        if reply and not reply_mentions_transcript(reply, transcript):
-            reply = None
-        source = "openai" if reply else "local"
-        reply = reply or local_roast(transcript, recent_replies, conversation_turns)
+        if is_money_topic(transcript):
+            reply = local_roast(transcript, recent_replies, conversation_turns)
+            source = "local"
+        else:
+            reply = openai_roast(transcript, recent_replies, conversation_turns)
+            if reply and not reply_mentions_transcript(reply, transcript):
+                reply = None
+            source = "openai" if reply else "local"
+            reply = reply or local_roast(transcript, recent_replies, conversation_turns)
         if normalize_reply(reply) in {normalize_reply(item) for item in recent_replies}:
             reply = local_roast(transcript, recent_replies, conversation_turns)
 

@@ -301,6 +301,9 @@
     const LISTEN_AFTER_SPEAK_MS = 300;
     const SILENT_RETRY_MS = 450;
     const ECHO_GUARD_MS = 9000;
+    const CONVERSATION_STORAGE_KEY = "soita-samille-conversation-v1";
+    const MAX_STORED_TURNS = 50;
+    const MAX_CONTEXT_TURNS = 30;
 
     let recognition = null;
     let lastReply = "";
@@ -316,6 +319,60 @@
     let conversationTurns = [];
     let audioUnlocked = false;
     let recentErrorReplies = [];
+
+    function sanitizeMemoryTurn(turn) {
+      if (!turn || typeof turn !== "object") return null;
+      const user = cleanTranscript(String(turn.user || "")).slice(0, 500);
+      const reply = cleanTranscript(String(turn.reply || "")).slice(0, 260);
+      const focus = cleanTranscript(String(turn.focus || "")).slice(0, 140);
+      const keywords = Array.isArray(turn.keywords)
+        ? turn.keywords.map((keyword) => cleanTranscript(String(keyword)).slice(0, 40)).filter(Boolean).slice(0, 6)
+        : [];
+      const at = Number.isFinite(turn.at) ? turn.at : Date.now();
+      if (!user && !reply) return null;
+      return { user, reply, focus, keywords, at };
+    }
+
+    function rebuildRecentRepliesFromMemory() {
+      recentReplies = conversationTurns
+        .map((turn) => turn.reply)
+        .filter(Boolean)
+        .slice(-80);
+      lastReply = recentReplies[recentReplies.length - 1] || "";
+    }
+
+    function loadConversationMemory() {
+      try {
+        const raw = localStorage.getItem(CONVERSATION_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        conversationTurns = Array.isArray(parsed)
+          ? parsed.map(sanitizeMemoryTurn).filter(Boolean).slice(-MAX_STORED_TURNS)
+          : [];
+      } catch {
+        conversationTurns = [];
+      }
+      rebuildRecentRepliesFromMemory();
+    }
+
+    function saveConversationMemory() {
+      try {
+        localStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(conversationTurns.slice(-MAX_STORED_TURNS)));
+      } catch {
+      }
+    }
+
+    function rememberConversationTurn(turn) {
+      const cleanTurn = sanitizeMemoryTurn(turn);
+      if (!cleanTurn) return;
+      conversationTurns.push(cleanTurn);
+      conversationTurns = conversationTurns.slice(-MAX_STORED_TURNS);
+      rebuildRecentRepliesFromMemory();
+      saveConversationMemory();
+    }
+
+    function conversationContext() {
+      return conversationTurns.slice(-MAX_CONTEXT_TURNS);
+    }
 
     function pickClientLine(candidates) {
       const fresh = candidates.filter((candidate) => !recentErrorReplies.includes(candidate));
@@ -796,7 +853,11 @@
       const response = await fetch("/api/roast", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript, recentReplies, conversationTurns }),
+        body: JSON.stringify({
+          transcript,
+          recentReplies,
+          conversationTurns: conversationContext(),
+        }),
       });
 
       if (!response.ok) throw new Error("roast_failed");
@@ -811,16 +872,13 @@
         keywords: data.keywords || [],
         reply: data.reply,
       });
-      lastReply = data.reply;
-      recentReplies.push(data.reply);
-      recentReplies = recentReplies.slice(-80);
-      conversationTurns.push({
+      rememberConversationTurn({
         user: transcript,
         reply: data.reply,
         focus: data.focus || "",
         keywords: Array.isArray(data.keywords) ? data.keywords.slice(0, 5) : [],
+        at: Date.now(),
       });
-      conversationTurns = conversationTurns.slice(-12);
       await speak(data.reply);
     }
 
@@ -868,8 +926,7 @@
       if (busy) return;
       busy = true;
       callActive = true;
-      recentReplies = [];
-      conversationTurns = [];
+      loadConversationMemory();
       lastAcceptedTranscript = "";
       lastAcceptedAt = 0;
       let finalStatus = "Linja vapaa";
@@ -956,6 +1013,7 @@
       setState("idle", "Linja vapaa");
     });
 
+    loadConversationMemory();
     setState("idle", "Linja vapaa");
   </script>
 </body>
